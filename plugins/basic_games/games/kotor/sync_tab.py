@@ -415,7 +415,7 @@ class Kotor2SyncTab(QWidget):
             args.extend(["--version", selected_version])
         args.extend(["--download", str(self._downloads_path())])
         if archive_name and not self._is_tslrcm_expected_archive_name(archive_name):
-            args.extend(["--file", archive_name])
+            args.extend(["--file", ArchiveService.deadlystream_download_name(mod)])
         process.start(str(scraper), args)
         return True
 

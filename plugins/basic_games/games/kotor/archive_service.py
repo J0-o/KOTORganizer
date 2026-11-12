@@ -410,6 +410,21 @@ class ArchiveService:
     def expected_archive_name(mod: dict) -> str:
         return html.unescape(str(mod.get("archive_name") or "")).strip().strip('"').strip("'")
 
+    @classmethod
+    def deadlystream_download_name(cls, mod: dict) -> str:
+        archive_name = cls.expected_archive_name(mod)
+        archive_files = mod.get("archive_files")
+        if isinstance(archive_files, list) and len(archive_files) == 1:
+            entry = archive_files[0]
+            source_name = Path(str(entry.get("path") or "")).name if isinstance(entry, dict) else ""
+            if (
+                source_name
+                and not cls.is_archive_file(Path(source_name))
+                and archive_name.casefold() == f"{source_name}.zip".casefold()
+            ):
+                return source_name
+        return archive_name
+
     def display_archive_name(self, mod: dict) -> str:
         return self.expected_archive_name(mod)
 
