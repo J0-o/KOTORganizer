@@ -186,7 +186,13 @@ class Kotor2SyncTab(QWidget):
 
 
     def _refresh_fetch_validate(self):
-        if self._fetch_thread is not None or self._validation_thread is not None:
+        if (
+            self._fetch_thread is not None
+            or self._validation_thread is not None
+            or self._download_process is not None
+            or self._browser_waiting is not None
+            or self._download_validation_thread is not None
+        ):
             return
         self._set_download_missing_available(False)
         self.refresh()
