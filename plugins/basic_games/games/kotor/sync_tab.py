@@ -1,5 +1,4 @@
 import configparser
-import ctypes
 import html
 import json
 import logging
@@ -8,7 +7,6 @@ import re
 import subprocess
 import tempfile
 import time
-from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -57,9 +55,6 @@ from ui_theme import (
 logger = logging.getLogger("mobase")
 
 
-_WM_CLOSE = 0x0010
-
-
 def _log_info(message: str):
     logger.info(f"[KOTOR2 Sync] {message}")
 
@@ -95,7 +90,7 @@ class Kotor2SyncTab(QWidget):
         self._organizer = organizer
         self._game = game
         self._download_queue: list[tuple[QTreeWidgetItem, dict]] = []
-        self._manual_download_queue: list[tuple[QTreeWidgetItem, dict, str, str]] = []
+        self._download_batch: list[tuple[QTreeWidgetItem, dict]] = []
         self._download_process: QProcess | None = None
         self._download_process_context: tuple[QTreeWidgetItem, dict, set[str]] | None = None
         self._download_validation_thread: QThread | None = None
@@ -103,9 +98,7 @@ class Kotor2SyncTab(QWidget):
         self._download_validation_context: tuple[QTreeWidgetItem, dict, Path, str, bool] | None = None
         self._download_validation_continue_pending = False
         self._download_cancel_requested = False
-        self._browser_process: subprocess.Popen | None = None
-        self._browser_profile_dir: Path | None = None
-        self._browser_waiting: tuple[QTreeWidgetItem, dict, Path, str, float, str, set[str]] | None = None
+        self._nexus_waiting: tuple[QTreeWidgetItem, dict, Path, float, set[str]] | None = None
         self._nexus_download_id: int | None = None
         self._nexus_auto_download_available: bool | None = None
         self._fetch_thread: QThread | None = None
@@ -190,7 +183,7 @@ class Kotor2SyncTab(QWidget):
             self._fetch_thread is not None
             or self._validation_thread is not None
             or self._download_process is not None
-            or self._browser_waiting is not None
+            or self._nexus_waiting is not None
             or self._download_validation_thread is not None
         ):
             return
@@ -296,13 +289,13 @@ class Kotor2SyncTab(QWidget):
     def _download_missing_archives(self):
         if (
             self._download_process is not None
-            or self._browser_waiting is not None
+            or self._nexus_waiting is not None
             or self._download_validation_thread is not None
             or self._validation_thread is not None
         ):
             return
         self._download_queue = []
-        self._manual_download_queue = []
+        self._download_batch = []
         self._nexus_auto_download_available = None
         for index in range(self._tree.topLevelItemCount()):
             row = self._tree.topLevelItem(index)
@@ -325,6 +318,7 @@ class Kotor2SyncTab(QWidget):
             self._details.setPlainText("No missing archives to download.")
             return
 
+        self._download_batch = list(self._download_queue)
         self._download_btn.setEnabled(False)
         self._stop_download_btn.setEnabled(True)
         self._details.setPlainText(f"Downloading {len(self._download_queue)} missing archive(s) one at a time.")
@@ -333,20 +327,8 @@ class Kotor2SyncTab(QWidget):
 
 
     def _process_next_download(self):
-        if not self._download_queue and not self._manual_download_queue:
-            self._set_download_missing_available(self._has_missing_download_rows())
-            self._stop_download_btn.setEnabled(False)
-            self._summary_label.setText("Download queue complete")
-            self._details.appendPlainText("\nDownload queue complete.")
-            _log_info("Download queue complete.")
-            return
-
         if not self._download_queue:
-            row, mod, url, reason = self._manual_download_queue.pop(0)
-            if self._row_is_sync_skipped(row):
-                QTimer.singleShot(0, self._process_next_download)
-                return
-            self._start_browser_download(row, mod, url, reason)
+            self._finish_download_queue()
             return
 
         row, mod = self._download_queue.pop(0)
@@ -381,8 +363,7 @@ class Kotor2SyncTab(QWidget):
         QApplication.processEvents()
 
         if not url:
-            self._mark_download_failed(row, mod, "No URL in KSON.")
-            QTimer.singleShot(0, self._process_next_download)
+            self._fail_download_and_continue(row, mod, "No URL in KSON. Download this archive manually.")
             return
         if "deadlystream.com" in host and self._start_deadlystream_download(row, mod, url, archive_name):
             return
@@ -390,13 +371,44 @@ class Kotor2SyncTab(QWidget):
             return
         if is_mega_url(url) and self._start_mega_download(row, mod, url):
             return
-        self._defer_manual_download(row, mod, url, "Browser fallback")
+        self._fail_download_and_continue(row, mod, "No automatic downloader supports this URL. Download it manually.")
+
+
+    def _fail_download_and_continue(self, row: QTreeWidgetItem, mod: dict, result: str):
+        self._mark_download_failed(row, mod, result)
+        QTimer.singleShot(0, self._process_next_download)
+
+
+    def _finish_download_queue(self):
+        batch = self._download_batch
+        self._download_batch = []
+        self._download_queue = []
+        self._set_download_missing_available(self._has_missing_download_rows())
+        self._stop_download_btn.setEnabled(False)
+
+        succeeded = [(row, mod) for row, mod in batch if row.text(0) in {"Hash OK", "Empty OK"}]
+        failed = [(row, mod) for row, mod in batch if row.text(0) not in {"Hash OK", "Empty OK"}]
+        summary = f"Downloaded and validated: {len(succeeded)}\nNeeds manual download: {len(failed)}"
+        if failed:
+            names = [self._kson_mod_name(mod) for _row, mod in failed]
+            displayed_names = names[:8]
+            summary += "\n\nManual downloads:\n" + "\n".join(f"• {name}" for name in displayed_names)
+            if len(names) > len(displayed_names):
+                summary += f"\n• …and {len(names) - len(displayed_names)} more"
+
+        self._summary_label.setText(f"Downloads: {len(succeeded)} ok, {len(failed)} manual")
+        self._details.appendPlainText(f"\nDownload queue complete.\n{summary}")
+        _log_info(f"Download queue complete: {len(succeeded)} ok, {len(failed)} manual.")
+        if failed:
+            QMessageBox.warning(self, "Download Queue Complete", summary)
+        else:
+            QMessageBox.information(self, "Download Queue Complete", summary)
 
 
     def _start_deadlystream_download(self, row: QTreeWidgetItem, mod: dict, url: str, archive_name: str) -> bool:
         scraper = Path(__file__).resolve().parent / "DeadlyScraper.exe"
         if not scraper.exists():
-            self._append_download_detail("DeadlyScraper.exe is missing; using browser fallback.", warning=True)
+            self._append_download_detail("DeadlyScraper.exe is missing; automatic download is unavailable.", warning=True)
             return False
         selected_version, selection_note = self._resolve_deadlystream_download_version(mod, url)
         if selected_version is None:
@@ -452,7 +464,7 @@ class Kotor2SyncTab(QWidget):
         self._append_download_detail(
             "\n".join(
                 [
-                    "DeadlyScraper did not produce the expected archive; using browser fallback.",
+                    "DeadlyScraper did not produce the expected archive.",
                     stdout,
                     stderr,
                 ]
@@ -460,18 +472,13 @@ class Kotor2SyncTab(QWidget):
             ,
             warning=True,
         )
-        self._defer_manual_download(
-            row,
-            mod,
-            str(mod.get("url") or ""),
-            "DeadlyScraper fallback",
-        )
+        self._fail_download_and_continue(row, mod, "DeadlyScraper failed. Download this archive manually.")
 
 
     def _start_mega_download(self, row: QTreeWidgetItem, mod: dict, url: str) -> bool:
         downloader = Path(__file__).resolve().parent / "MegaDownloader.exe"
         if not downloader.exists():
-            self._append_download_detail("MegaDownloader.exe is missing; using browser fallback.", warning=True)
+            self._append_download_detail("MegaDownloader.exe is missing; automatic download is unavailable.", warning=True)
             return False
         process = QProcess(self)
         self._download_process = process
@@ -514,32 +521,23 @@ class Kotor2SyncTab(QWidget):
             self._mark_downloaded(row, mod, downloaded_path, "Downloaded with MegaDownloader.", continue_queue=True)
             return
 
-        details = ["MegaDownloader failed; using browser fallback."]
+        details = ["MegaDownloader failed."]
         if stdout:
             details.append(stdout)
         if stderr:
             details.append(stderr)
         self._append_download_detail("\n".join(details), warning=True)
-        self._defer_manual_download(row, mod, str(mod.get("url") or ""), "MegaDownloader fallback")
+        self._fail_download_and_continue(row, mod, "MegaDownloader failed. Download this archive manually.")
 
 
     def _start_nexus_download(self, row: QTreeWidgetItem, mod: dict, url: str) -> bool:
         if self._nexus_auto_download_available is False:
-            popup_url = self._nexus_download_popup_url(mod, url)
-            self._defer_manual_download(row, mod, popup_url or url, "Nexus manual fallback")
+            self._fail_download_and_continue(row, mod, "MO2/Nexus automatic download is unavailable. Download this archive manually.")
             return True
         if self._start_nxm_download(row, mod, url):
             return True
         self._nexus_auto_download_available = False
-        popup_url = self._nexus_download_popup_url(mod, url)
-        if popup_url:
-            self._defer_manual_download(row, mod, popup_url, "Nexus DownloadPopUp fallback")
-            return True
-        self._append_download_detail(
-            "Nexus file_id is missing from the KSON. Rebuild the KSON so Nexus archive.meta modID/fileID fields are included.",
-            warning=True,
-        )
-        self._defer_manual_download(row, mod, url, "Nexus manual fallback")
+        self._fail_download_and_continue(row, mod, "MO2/Nexus automatic download could not start. Download this archive manually.")
         return True
 
 
@@ -562,25 +560,23 @@ class Kotor2SyncTab(QWidget):
                 int(file_id),
             )
         except Exception as exc:
-            self._append_download_detail(f"MO2 Nexus download could not start ({exc}); using browser fallback.", warning=True)
+            self._append_download_detail(f"MO2 Nexus download could not start ({exc}).", warning=True)
             return False
         if download_id < 0:
-            self._append_download_detail("MO2 Nexus download could not start; using browser fallback.", warning=True)
+            self._append_download_detail("MO2 Nexus download could not start.", warning=True)
             return False
 
         self._nexus_download_id = download_id
         self._mark_download_pending(row, mod, f"Started MO2/Nexus download: {nxm_url}")
-        self._browser_waiting = (
+        self._nexus_waiting = (
             row,
             mod,
             self._downloads_path() / html.unescape(self._expected_archive_name(mod)),
-            "MO2 nxm download",
             time.monotonic() + self._NEXUS_START_TIMEOUT_SECONDS,
-            url,
             existing_names,
         )
         self._stop_download_btn.setEnabled(True)
-        QTimer.singleShot(2000, self._poll_browser_download)
+        QTimer.singleShot(2000, self._poll_nexus_download)
         return True
 
 
@@ -589,31 +585,27 @@ class Kotor2SyncTab(QWidget):
             return
         self._nexus_auto_download_available = True
         self._nexus_download_id = None
-        if self._browser_waiting is not None:
-            row, mod, expected_path, _reason, _deadline, url, existing_names = self._browser_waiting
-            self._browser_waiting = (
+        if self._nexus_waiting is not None:
+            row, mod, expected_path, _deadline, existing_names = self._nexus_waiting
+            self._nexus_waiting = (
                 row,
                 mod,
                 expected_path,
-                "MO2 Nexus download",
                 time.monotonic() + 900,
-                url,
                 existing_names,
             )
-        QTimer.singleShot(0, self._poll_browser_download)
+        QTimer.singleShot(0, self._poll_nexus_download)
 
 
     def _fail_nexus_download(self, download_id: int):
-        if download_id != self._nexus_download_id or self._browser_waiting is None:
+        if download_id != self._nexus_download_id or self._nexus_waiting is None:
             return
-        row, mod, _expected_path, _reason, _deadline, url, _existing_names = self._browser_waiting
+        row, mod, _expected_path, _deadline, _existing_names = self._nexus_waiting
         self._nexus_auto_download_available = False
         self._nexus_download_id = None
-        self._browser_waiting = None
+        self._nexus_waiting = None
         QTimer.singleShot(0, self._refresh_download_manager_view)
-        popup_url = self._nexus_download_popup_url(mod, url)
-        self._append_download_detail("MO2 Nexus download failed; using browser fallback.", warning=True)
-        self._defer_manual_download(row, mod, popup_url or url, "Nexus DownloadPopUp fallback")
+        self._fail_download_and_continue(row, mod, "MO2/Nexus download failed. Download this archive manually.")
 
 
     def _refresh_download_manager_view(self):
@@ -639,138 +631,37 @@ class Kotor2SyncTab(QWidget):
         return str(payload.get("Author") or payload.get("author") or "").strip()
 
 
-    def _nexus_download_popup_url(self, mod: dict, url: str) -> str:
-        file_id = str(mod.get("file_id") or mod.get("fileID") or "").strip()
-        if not file_id or not file_id.isdigit() or int(file_id) <= 0:
-            return ""
-        return (
-            "https://www.nexusmods.com/Core/Libs/Common/Widgets/DownloadPopUp"
-            f"?id={file_id}&game_id={self._nexus_game_id()}&nmm=1"
-        )
-
-    def _manual_download_url(self, mod: dict, url: str) -> str:
-        host = urlparse(url).netloc.lower()
-        if "nexusmods.com" not in host:
-            return url
-        mod_id = str(mod.get("mod_id") or mod.get("modID") or "").strip() or self._nexus_mod_id(url)
-        if not mod_id:
-            return url
-        return f"https://www.nexusmods.com/{self._nexus_game_name()}/mods/{mod_id}?tab=files"
-
-
-    def _start_browser_download(self, row: QTreeWidgetItem, mod: dict, url: str, reason: str):
-        archive_name = self._expected_archive_name(mod)
-        downloads_path = self._downloads_path()
-        edge = self._edge_path()
-        if not edge:
-            self._mark_download_pending(row, mod, f"{reason}: Edge not found; opened default browser.")
-            QDesktopServices.openUrl(QUrl(url))
-            QTimer.singleShot(0, self._process_next_download)
+    def _poll_nexus_download(self):
+        if self._nexus_waiting is None:
             return
-
-        profile_dir = Path(self._organizer.profilePath()) / "edge_profile"
-        self._prepare_edge_profile(profile_dir, downloads_path)
-        try:
-            self._browser_profile_dir = profile_dir
-            self._browser_process = subprocess.Popen(
-                [
-                    str(edge),
-                    f"--user-data-dir={profile_dir}",
-                    "--no-first-run",
-                    "--no-default-browser-check",
-                    "--disable-session-crashed-bubble",
-                    "--hide-crash-restore-bubble",
-                    "--disable-sync",
-                    "--new-window",
-                    url,
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        except Exception as exc:
-            self._browser_profile_dir = None
-            self._mark_download_pending(row, mod, f"{reason}: Edge launch failed ({exc}); opened default browser.")
-            QDesktopServices.openUrl(QUrl(url))
-            QTimer.singleShot(0, self._process_next_download)
-            return
-
-        existing_names = {path.name for path in downloads_path.iterdir() if path.is_file()}
-        self._browser_waiting = (
-            row,
-            mod,
-            downloads_path / html.unescape(archive_name),
-            reason,
-            time.monotonic() + 900,
-            url,
-            existing_names,
-        )
-        self._stop_download_btn.setEnabled(True)
-        self._append_download_detail(f"{reason}: opened Edge profile. Waiting for archive download.")
-        QTimer.singleShot(2000, self._poll_browser_download)
-
-
-    def _defer_manual_download(self, row: QTreeWidgetItem, mod: dict, url: str, reason: str):
-        self._manual_download_queue.append((row, mod, url, reason))
-        self._mark_download_pending(row, mod, f"{reason}: queued after automatic downloads.")
-        QTimer.singleShot(0, self._process_next_download)
-
-
-    def _poll_browser_download(self):
-        if self._browser_waiting is None:
-            return
-        row, mod, expected_path, reason, deadline, url, existing_names = self._browser_waiting
-        detected_path = self._detect_browser_download(expected_path, existing_names)
+        row, mod, expected_path, deadline, existing_names = self._nexus_waiting
+        detected_path = self._detect_nexus_download(expected_path, existing_names)
         if detected_path is not None:
-            self._browser_waiting = None
+            self._nexus_waiting = None
             self._nexus_download_id = None
-            self._mark_downloaded(row, mod, detected_path, f"{reason}: browser download detected.", continue_queue=True)
-            QTimer.singleShot(2500, self._close_browser_process)
+            self._mark_downloaded(row, mod, detected_path, "MO2/Nexus download detected.", continue_queue=True)
             return
-        if "nxm" in reason.casefold() and self._has_new_download_artifact(existing_names):
+        if self._has_new_download_artifact(existing_names):
             self._nexus_auto_download_available = True
-            self._browser_waiting = (
+            self._nexus_waiting = (
                 row,
                 mod,
                 expected_path,
-                "MO2 Nexus download",
                 time.monotonic() + 900,
-                url,
                 existing_names,
             )
-            QTimer.singleShot(2000, self._poll_browser_download)
-            return
-        if self._browser_process is not None and self._browser_process.poll() is not None:
-            self._browser_waiting = None
-            self._close_browser_process()
-            self._set_validation_row(
-                row,
-                "Failed",
-                self._kson_mod_name(mod),
-                self._expected_archive_name(mod),
-                str(mod.get("archive_xxh3") or "").strip().lower(),
-                None,
-                "",
-                f"{reason}: browser window was closed before the download completed.",
-            )
-            QTimer.singleShot(0, self._process_next_download)
+            QTimer.singleShot(2000, self._poll_nexus_download)
             return
         if time.monotonic() >= deadline:
-            self._browser_waiting = None
+            self._nexus_waiting = None
             self._nexus_download_id = None
-            self._close_browser_process()
-            fallback_url = self._nexus_download_popup_url(mod, url) if "nxm" in reason.casefold() else ""
-            if fallback_url:
-                self._nexus_auto_download_available = False
-                self._defer_manual_download(row, mod, fallback_url, "Nexus DownloadPopUp fallback")
-            else:
-                self._mark_download_pending(row, mod, f"{reason}: Edge did not finish within 15 minutes; opened default browser.")
-                QDesktopServices.openUrl(QUrl(url))
-                QTimer.singleShot(0, self._process_next_download)
+            self._nexus_auto_download_available = False
+            self._fail_download_and_continue(row, mod, "MO2/Nexus download timed out. Download this archive manually.")
             return
-        QTimer.singleShot(2000, self._poll_browser_download)
+        QTimer.singleShot(2000, self._poll_nexus_download)
 
 
-    def _detect_browser_download(self, expected_path: Path, existing_names: set[str]) -> Path | None:
+    def _detect_nexus_download(self, expected_path: Path, existing_names: set[str]) -> Path | None:
         return self._archive_service().detect_browser_download(expected_path, existing_names)
 
     def _detect_new_download(self, existing_names: set[str]) -> Path | None:
@@ -787,31 +678,9 @@ class Kotor2SyncTab(QWidget):
         return ArchiveService.is_incomplete_download_name(name)
 
 
-    def _close_browser_process(self):
-        process = self._browser_process
-        self._browser_process = None
-        profile_dir = self._browser_profile_dir
-        self._browser_profile_dir = None
-        if process is not None and process.poll() is None:
-            self._request_browser_close(process.pid)
-            try:
-                process.wait(timeout=5)
-            except Exception:
-                try:
-                    process.terminate()
-                    process.wait(timeout=5)
-                except Exception:
-                    try:
-                        process.kill()
-                        process.wait(timeout=5)
-                    except Exception:
-                        pass
-        if profile_dir is not None:
-            self._sanitize_edge_profile(profile_dir)
-
     def _stop_downloads(self):
         self._download_queue = []
-        self._manual_download_queue = []
+        self._download_batch = []
         self._download_validation_continue_pending = False
         if self._validation_worker is not None:
             self._validation_worker.cancel()
@@ -838,13 +707,12 @@ class Kotor2SyncTab(QWidget):
             process.kill()
             process.waitForFinished(5000)
             return
-        if self._browser_waiting is not None:
-            row, mod, _expected_path, _reason, _deadline, _url, existing_names = self._browser_waiting
-            self._browser_waiting = None
+        if self._nexus_waiting is not None:
+            row, mod, _expected_path, _deadline, existing_names = self._nexus_waiting
+            self._nexus_waiting = None
             self._nexus_download_id = None
-            self._close_browser_process()
             self._cleanup_download_artifacts(existing_names)
-            self._mark_download_stopped(row, mod, "Browser download stopped and cleaned up.")
+            self._mark_download_stopped(row, mod, "MO2/Nexus download stopped and cleaned up.")
         self._download_btn.setEnabled(self._download_missing_available)
         self._stop_download_btn.setEnabled(False)
 
@@ -956,7 +824,7 @@ class Kotor2SyncTab(QWidget):
             self._mark_download_stopped(row, mod, message)
             self._download_validation_continue_pending = False
             self._download_queue = []
-            self._manual_download_queue = []
+            self._download_batch = []
             return
         self._set_validation_row(
             row,
@@ -978,7 +846,7 @@ class Kotor2SyncTab(QWidget):
         self._download_validation_context = None
         continue_pending = self._download_validation_continue_pending
         self._download_validation_continue_pending = False
-        if not continue_pending and self._download_process is None and self._browser_waiting is None:
+        if not continue_pending and self._download_process is None and self._nexus_waiting is None:
             self._stop_download_btn.setEnabled(False)
         if continue_pending:
             QTimer.singleShot(self._DOWNLOAD_QUEUE_DELAY_MS, self._process_next_download)
@@ -1000,7 +868,7 @@ class Kotor2SyncTab(QWidget):
     def _mark_download_failed(self, row: QTreeWidgetItem, mod: dict, result: str):
         self._set_validation_row(
             row,
-            "Download Fail",
+            "Failed",
             self._kson_mod_name(mod),
             self._expected_archive_name(mod),
             str(mod.get("archive_xxh3") or "").strip().lower(),
@@ -1123,7 +991,6 @@ class Kotor2SyncTab(QWidget):
         menu = QMenu(self)
         skip_action = menu.addAction("Unskip" if self._row_is_sync_skipped(row) else "Skip")
         download_action = menu.addAction("Download")
-        manual_download_action = menu.addAction("Manual Download")
         webpage_action = menu.addAction("View Web Page")
         hash_action = menu.addAction("Hash Check")
         explorer_action = menu.addAction("Open in Explorer")
@@ -1132,28 +999,24 @@ class Kotor2SyncTab(QWidget):
             self._validation_thread is not None
             or self._sync_busy
             or self._download_process is not None
-            or self._browser_waiting is not None
+            or self._nexus_waiting is not None
             or self._download_validation_thread is not None
         ):
             skip_action.setEnabled(False)
         if (
             self._download_process is not None
-            or self._browser_waiting is not None
+            or self._nexus_waiting is not None
             or self._download_validation_thread is not None
         ):
             download_action.setEnabled(False)
-            manual_download_action.setEnabled(False)
         if self._validation_thread is not None:
             download_action.setEnabled(False)
-            manual_download_action.setEnabled(False)
             hash_action.setEnabled(False)
         if self._row_is_sync_skipped(row):
             download_action.setEnabled(False)
-            manual_download_action.setEnabled(False)
             hash_action.setEnabled(False)
         if not url:
             webpage_action.setEnabled(False)
-            manual_download_action.setEnabled(False)
         if not archive_name:
             download_action.setEnabled(False)
             hash_action.setEnabled(False)
@@ -1165,8 +1028,6 @@ class Kotor2SyncTab(QWidget):
             self._set_row_sync_skipped(row, mod, not self._row_is_sync_skipped(row))
         elif chosen is download_action:
             self._download_selected_row(row, mod)
-        elif chosen is manual_download_action:
-            self._manual_download_selected_row(row, mod)
         elif chosen is webpage_action and url:
             QDesktopServices.openUrl(QUrl(url))
         elif chosen is hash_action:
@@ -1178,7 +1039,7 @@ class Kotor2SyncTab(QWidget):
     def _download_selected_row(self, row: QTreeWidgetItem, mod: dict):
         if (
             self._download_process is not None
-            or self._browser_waiting is not None
+            or self._nexus_waiting is not None
             or self._download_validation_thread is not None
             or self._validation_thread is not None
         ):
@@ -1186,30 +1047,10 @@ class Kotor2SyncTab(QWidget):
         if self._row_is_sync_skipped(row):
             return
         self._download_queue = [(row, mod)]
-        self._manual_download_queue = []
+        self._download_batch = list(self._download_queue)
         self._nexus_auto_download_available = None
         self._download_btn.setEnabled(False)
         self._process_next_download()
-
-    def _manual_download_selected_row(self, row: QTreeWidgetItem, mod: dict):
-        if (
-            self._download_process is not None
-            or self._browser_waiting is not None
-            or self._download_validation_thread is not None
-            or self._validation_thread is not None
-        ):
-            return
-        if self._row_is_sync_skipped(row):
-            return
-        url = str(mod.get("url") or "").strip()
-        if not url:
-            return
-        manual_url = self._manual_download_url(mod, url)
-        self._download_queue = []
-        self._manual_download_queue = []
-        self._download_btn.setEnabled(False)
-        self._start_browser_download(row, mod, manual_url, "Manual download")
-
 
     def _validate_archive_row(self, row: QTreeWidgetItem):
         if self._validation_thread is not None:
@@ -1893,120 +1734,6 @@ class Kotor2SyncTab(QWidget):
     def _nexus_mod_id(url: str) -> str:
         match = re.search(r"/mods/(\d+)", url)
         return match.group(1) if match else ""
-
-
-    @staticmethod
-    def _edge_path() -> Path | None:
-        candidates = [
-            Path("C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"),
-            Path("C:/Program Files/Microsoft/Edge/Application/msedge.exe"),
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return None
-
-
-    @staticmethod
-    def _prepare_edge_profile(profile_dir: Path, downloads_path: Path):
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        default_dir = profile_dir / "Default"
-        default_dir.mkdir(parents=True, exist_ok=True)
-        prefs_path = default_dir / "Preferences"
-        prefs = {}
-        if prefs_path.exists():
-            try:
-                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-            except Exception:
-                prefs = {}
-        prefs.setdefault("download", {})
-        prefs["download"]["default_directory"] = str(downloads_path)
-        prefs["download"]["prompt_for_download"] = False
-        prefs.setdefault("profile", {})
-        prefs["profile"].setdefault("default_content_setting_values", {})
-        prefs["profile"]["exit_type"] = "Normal"
-        prefs["profile"]["exited_cleanly"] = True
-        prefs["profile"]["edge_crash_exit_count"] = 0
-        prefs.setdefault("session_restore_prompt", {})
-        prefs["session_restore_prompt"]["ignored"] = True
-        prefs.setdefault("sessions", {})
-        prefs["sessions"]["event_log"] = []
-        prefs_path.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
-        (profile_dir / "First Run").write_text("", encoding="ascii")
-        Kotor2SyncTab._clear_edge_session_files(profile_dir)
-
-
-    @staticmethod
-    def _sanitize_edge_profile(profile_dir: Path):
-        default_dir = profile_dir / "Default"
-        prefs_path = default_dir / "Preferences"
-        if prefs_path.exists():
-            try:
-                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-            except Exception:
-                prefs = {}
-            prefs.setdefault("profile", {})
-            prefs["profile"].setdefault("default_content_setting_values", {})
-            prefs["profile"]["exit_type"] = "Normal"
-            prefs["profile"]["exited_cleanly"] = True
-            prefs["profile"]["edge_crash_exit_count"] = 0
-            prefs.setdefault("session_restore_prompt", {})
-            prefs["session_restore_prompt"]["ignored"] = True
-            prefs.setdefault("sessions", {})
-            prefs["sessions"]["event_log"] = []
-            try:
-                prefs_path.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-        Kotor2SyncTab._clear_edge_session_files(profile_dir)
-
-
-    @staticmethod
-    def _clear_edge_session_files(profile_dir: Path):
-        for relative_name in (
-            "Default/Current Session",
-            "Default/Current Tabs",
-            "Default/Last Session",
-            "Default/Last Tabs",
-            "SingletonCookie",
-            "SingletonLock",
-            "SingletonSocket",
-        ):
-            candidate = profile_dir / relative_name
-            if candidate.exists():
-                try:
-                    candidate.unlink()
-                except Exception:
-                    pass
-        sessions_dir = profile_dir / "Default" / "Sessions"
-        if sessions_dir.exists():
-            for child in sessions_dir.iterdir():
-                try:
-                    if child.is_file():
-                        child.unlink()
-                except Exception:
-                    pass
-
-
-    @staticmethod
-    def _request_browser_close(pid: int):
-        if os.name != "nt" or pid <= 0:
-            return
-        try:
-            user32 = ctypes.windll.user32
-            enum_windows_proc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-
-            def callback(hwnd, _lparam):
-                window_pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
-                if window_pid.value == pid and user32.IsWindowVisible(hwnd):
-                    user32.PostMessageW(hwnd, _WM_CLOSE, 0, 0)
-                return True
-
-            callback_proc = enum_windows_proc(callback)
-            user32.EnumWindows(callback_proc, 0)
-        except Exception:
-            pass
 
 
     def _write_archive_meta(self, mod: dict, archive_path: Path):

@@ -57,14 +57,20 @@ class ArchiveService:
         if not expected_hash:
             return self._result("skipped", "Skipped", mod_name, archive_name, expected_hash, None, "", "No archive hash in KSON.")
 
-        named_archive_path = self.resolve_named_archive_path(self.expected_archive_name(mod))
-        if named_archive_path is not None:
-            return self.validate_archive_path(mod, named_archive_path, hash_cache=hash_cache, allow_content_hash=True)
+        first_mismatch = None
+        for named_archive_path in self.resolve_named_archive_paths(self.expected_archive_name(mod)):
+            result = self.validate_archive_path(mod, named_archive_path, hash_cache=hash_cache, allow_content_hash=True)
+            if result.get("bucket") == "ok":
+                return result
+            if first_mismatch is None:
+                first_mismatch = result
 
         archive_path = self.resolve_archive_path_by_hash(expected_hash, hash_cache=hash_cache)
-        if archive_path is None:
-            return self._result("missing", "Missing", mod_name, archive_name, expected_hash, None, "", "Archive not found in MO2 downloads.")
-        return self.validate_archive_path(mod, archive_path, hash_cache=hash_cache, allow_content_hash=False)
+        if archive_path is not None:
+            return self.validate_archive_path(mod, archive_path, hash_cache=hash_cache, allow_content_hash=False)
+        if first_mismatch is not None:
+            return first_mismatch
+        return self._result("missing", "Missing", mod_name, archive_name, expected_hash, None, "", "Archive not found in MO2 downloads.")
 
     def validate_archive_path(
         self,
@@ -107,36 +113,45 @@ class ArchiveService:
         )
 
     def resolve_archive_path_for_mod(self, mod: dict, hash_cache: dict[Path, str] | None = None) -> Path | None:
-        archive_path = self.resolve_named_archive_path(self.expected_archive_name(mod))
-        if archive_path is not None:
-            return archive_path
+        for archive_path in self.resolve_named_archive_paths(self.expected_archive_name(mod)):
+            result = self.validate_archive_path(mod, archive_path, hash_cache=hash_cache, allow_content_hash=True)
+            if result.get("bucket") == "ok":
+                return archive_path
         expected_hash = str(mod.get("archive_xxh3") or "").strip().lower()
         if not expected_hash:
             return None
         return self.resolve_archive_path_by_hash(expected_hash, hash_cache=hash_cache)
 
     def resolve_named_archive_path(self, *archive_names: str) -> Path | None:
+        candidates = self.resolve_named_archive_paths(*archive_names)
+        return candidates[0] if candidates else None
+
+    def resolve_named_archive_paths(self, *archive_names: str) -> list[Path]:
         candidates: list[str] = []
         for archive_name in archive_names:
             candidates.extend([archive_name, html.unescape(archive_name)])
-        seen: set[str] = set()
+        paths: list[Path] = []
+        seen_names: set[str] = set()
+        seen_paths: set[Path] = set()
         for candidate in candidates:
             cleaned = candidate.strip().strip('"').strip("'")
-            if not cleaned or cleaned in seen:
+            if not cleaned or cleaned in seen_names:
                 continue
-            seen.add(cleaned)
+            seen_names.add(cleaned)
             for path in (self._downloads_path / cleaned, self._downloads_path / f"{cleaned}.zip"):
-                if path.exists():
-                    return path
-            duplicate_path = self.resolve_duplicate_named_archive_path(cleaned)
-            if duplicate_path is not None:
-                return duplicate_path
+                if path.exists() and path not in seen_paths:
+                    paths.append(path)
+                    seen_paths.add(path)
+            for duplicate_path in self.resolve_duplicate_named_archive_paths(cleaned):
+                if duplicate_path not in seen_paths:
+                    paths.append(duplicate_path)
+                    seen_paths.add(duplicate_path)
         expected_archive_name = next((str(name).strip() for name in archive_names if str(name).strip()), "")
         if self.is_tslrcm_expected_archive_name(expected_archive_name):
             converted_path = self.convert_matching_tslrcm_installer(expected_archive_name)
-            if converted_path is not None and converted_path.exists():
-                return converted_path
-        return None
+            if converted_path is not None and converted_path.exists() and converted_path not in seen_paths:
+                paths.append(converted_path)
+        return paths
 
     def resolve_duplicate_named_archive_path(self, archive_name: str) -> Path | None:
         candidates = self.resolve_duplicate_named_archive_paths(archive_name)
@@ -191,8 +206,8 @@ class ArchiveService:
 
     def archive_contents_hash_ok(self, mod: dict, archive_path: Path) -> tuple[bool, str]:
         archive_files = mod.get("archive_files")
-        if not isinstance(archive_files, list) or not archive_files:
-            return False, "Archive hash does not match."
+        if not isinstance(archive_files, list) or len(archive_files) != 1:
+            return False, "Archive hash does not match; content hashing is only allowed for single-file archives."
 
         expected_by_path: dict[str, str] = {}
         for file_entry in archive_files:
@@ -207,6 +222,8 @@ class ArchiveService:
         actual_by_path, extraction_error = self.archive_member_hashes(archive_path)
         if extraction_error:
             return False, f"Archive hash does not match, and archive contents could not be extracted for comparison ({extraction_error})."
+        if len(actual_by_path) != 1:
+            return False, "Archive hash does not match; the archive does not contain exactly one file."
 
         expected_paths = set(expected_by_path)
         actual_paths = set(actual_by_path)
@@ -451,7 +468,7 @@ class ArchiveService:
         if not actual_stem.startswith(expected_stem):
             return False
         extra = actual_stem[len(expected_stem):]
-        return bool(re.match(r"^(?:\s*\(\d+\)|[\s._-].+)$", extra))
+        return bool(extra)
 
     @staticmethod
     def kson_mod_name(mod) -> str:
