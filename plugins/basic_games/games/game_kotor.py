@@ -59,7 +59,7 @@ class StarWarsKotorGame(KotorGameMixin, BasicGame, mobase.IPluginFileMapper):
 
     Name = "STAR WARS Knights of the Old Republic"
     Author = "J"
-    Version = "2.6.7"
+    Version = "2.3.0"
 
     GameName = Name
     GameShortName = "kotor"
