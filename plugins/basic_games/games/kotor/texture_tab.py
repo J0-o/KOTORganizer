@@ -111,7 +111,7 @@ class Kotor2TextureTab(QWidget):
         configure_refresh_button(refresh_btn)
         refresh_btn.clicked.connect(self.refresh)
         auto_fix_btn = QPushButton("Auto Fix")
-        auto_fix_btn.clicked.connect(self._auto_fix)
+        auto_fix_btn.clicked.connect(self._undo_all_and_auto_fix)
         unhide_btn = QPushButton("Undo All")
         unhide_btn.clicked.connect(self._unhide_all)
         header.addWidget(refresh_btn)
@@ -567,6 +567,11 @@ class Kotor2TextureTab(QWidget):
                 break
 
         self.refresh()
+
+
+    def _undo_all_and_auto_fix(self):
+        self._unhide_all()
+        self._auto_fix()
 
 
     def _unhide_all(self):
