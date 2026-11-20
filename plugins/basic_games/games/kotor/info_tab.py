@@ -159,7 +159,7 @@ class KotorInfoTab(QWidget):
         ),
         (
             "PyZip",
-            "https://github.com/Modding-Forge",
+            "https://github.com/Modding-Forge/7z.py",
         ),
         (
             "xxHash",
