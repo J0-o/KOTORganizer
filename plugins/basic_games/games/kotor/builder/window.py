@@ -1327,6 +1327,7 @@ class KotorBuilderWindow(QWidget):
     def _build_instruction_set(self):
         self._prepare_for_build()
         installed_mods = self._installed_mod_entries()
+        self._ensure_kotor_repo_metadata_for_build(installed_mods)
         valid_mods: list[BuildInputMod] = []
         invalid_mods: list[str] = []
         for installed in installed_mods:
@@ -1345,7 +1346,7 @@ class KotorBuilderWindow(QWidget):
                     mod_name=installed.name,
                     archive_name=installed.installation_file,
                     archive_path=archive_file if archive_file and archive_file.exists() else None,
-                    version=self._current_archive_version(installed),
+                    version=self._current_archive_version(installed, build_url),
                     release_date=installed.download_meta.get(self._ARCHIVE_RELEASE_DATE_FIELD, "").strip(),
                     author=(
                         self._author_by_url.get(_canonical_url(build_url), "")
@@ -1505,13 +1506,33 @@ class KotorBuilderWindow(QWidget):
         return any(part in {"VALID", "VALID URL", "OVERRIDE", "DATE FORCED", "DATE OK"} for part in validation.summary.split(" | "))
 
 
-    @staticmethod
-    def _current_archive_version(installed: _InstalledModEntry) -> str:
+    def _ensure_kotor_repo_metadata_for_build(self, installed_mods: list[_InstalledModEntry]):
+        if self._kotor_repo_by_url:
+            return
+        for installed in installed_mods:
+            if not self._is_build_valid(self._validation_by_mod.get(installed.name)):
+                continue
+            if not any("deadlystream.com" in urlparse(url).netloc.lower() for entry in self._matching_build_entries(installed) for url in entry.urls):
+                continue
+            try:
+                self._kotor_repo_by_url = fetch_kotor_repo_metadata(
+                    self._game.gameShortName(),
+                    self._FETCH_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+            return
+
+
+    def _current_archive_version(self, installed: _InstalledModEntry, build_url: str = "") -> str:
         version = installed.download_meta.get("version", "").strip()
         if version and version != "0.0.0.0":
             return version
         newest = installed.download_meta.get("newestVersion", "").strip()
-        return newest if newest != "0.0.0.0" else ""
+        if newest and newest != "0.0.0.0":
+            return newest
+        metadata = self._kotor_repo_by_url.get(_canonical_url(build_url))
+        return metadata.latest_version if metadata is not None else ""
 
 
     def _default_build_output_path(self) -> Path:
