@@ -35,7 +35,34 @@ def file_hash(path: Path) -> str:
 
 
 def file_hashes(paths: list[Path]) -> dict[Path, str]:
-    return {path: file_hash(path) for path in paths}
+    if not paths:
+        return {}
+    exe = xxhsum_exe()
+    if not exe:
+        raise RuntimeError("xxhsum is required to calculate XXH3 hashes")
+    result = subprocess.run(
+        [exe, "-H3", "--filelist", "-"],
+        input="\n".join(str(path) for path in paths) + "\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        startupinfo=SUBPROCESS_STARTUPINFO,
+        creationflags=SUBPROCESS_CREATIONFLAGS,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"xxhsum failed with exit code {result.returncode}: {result.stderr.strip()}")
+    lines = result.stdout.splitlines()
+    if len(lines) != len(paths):
+        raise RuntimeError(f"xxhsum returned {len(lines)} hashes for {len(paths)} files")
+    hashes: dict[Path, str] = {}
+    for path, line in zip(paths, lines):
+        value = parse_xxhsum_output(line)
+        if len(value) != 16 or any(char not in "0123456789abcdef" for char in value):
+            raise RuntimeError(f"xxhsum returned an invalid XXH3 hash for {path}: {line}")
+        hashes[path] = value
+    return hashes
 
 
 
