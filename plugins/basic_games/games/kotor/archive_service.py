@@ -58,16 +58,28 @@ class ArchiveService:
             return self._result("skipped", "Skipped", mod_name, archive_name, expected_hash, None, "", "No archive hash in KSON.")
 
         first_mismatch = None
-        for named_archive_path in self.resolve_named_archive_paths(self.expected_archive_name(mod)):
+        named_archive_paths = self.resolve_named_archive_paths(self.expected_archive_name(mod))
+        if not named_archive_paths:
+            logger.warning(
+                f"[KOTOR2 Sync] {mod_name}: filename match failed for {archive_name}; "
+                "no exact or suffixed archive was found."
+            )
+        for named_archive_path in named_archive_paths:
             result = self.validate_archive_path(mod, named_archive_path, hash_cache=hash_cache, allow_content_hash=True)
             if result.get("bucket") == "ok":
+                if first_mismatch is not None:
+                    logger.info(f"[KOTOR2 Sync] {mod_name}: validation recovered with {named_archive_path.name}.")
                 return result
             if first_mismatch is None:
                 first_mismatch = result
 
+        logger.warning(f"[KOTOR2 Sync] {mod_name}: named archive validation failed; scanning all archives by hash.")
         archive_path = self.resolve_archive_path_by_hash(expected_hash, hash_cache=hash_cache)
         if archive_path is not None:
-            return self.validate_archive_path(mod, archive_path, hash_cache=hash_cache, allow_content_hash=False)
+            result = self.validate_archive_path(mod, archive_path, hash_cache=hash_cache, allow_content_hash=False)
+            logger.info(f"[KOTOR2 Sync] {mod_name}: validation recovered during the full archive scan with {archive_path.name}.")
+            return result
+        logger.warning(f"[KOTOR2 Sync] {mod_name}: full archive hash scan failed; no archive matched {expected_hash}.")
         if first_mismatch is not None:
             return first_mismatch
         return self._result("missing", "Missing", mod_name, archive_name, expected_hash, None, "", "Archive not found in MO2 downloads.")
@@ -95,10 +107,16 @@ class ArchiveService:
                 result_text = f"Archive name did not match, but archive hash matched: {archive_path.name}"
             return self._result("ok", "Hash OK", mod_name, archive_name, expected_hash, archive_path, actual_hash, result_text)
 
+        logger.warning(
+            f"[KOTOR2 Sync] {mod_name}: archive hash failed for {archive_path.name}; "
+            f"expected {expected_hash}, got {actual_hash}."
+        )
         if allow_content_hash and name_matches:
             archive_files_ok, result_text = self.archive_contents_hash_ok(mod, archive_path)
             if archive_files_ok:
+                logger.info(f"[KOTOR2 Sync] {mod_name}: validation recovered with the single-file content hash for {archive_path.name}.")
                 return self._result("ok", "Hash OK", mod_name, archive_name, expected_hash, archive_path, actual_hash, result_text)
+            logger.warning(f"[KOTOR2 Sync] {mod_name}: single-file content hash failed for {archive_path.name}: {result_text}")
             return self._result("mismatch", "Hash Miss", mod_name, archive_name, expected_hash, archive_path, actual_hash, result_text)
 
         return self._result(
