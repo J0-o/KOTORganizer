@@ -43,6 +43,7 @@ class _FetchWorker(QObject):
         repo: str,
         timeout: int,
         selected_kson_name: str = "",
+        known_kson_names: list[str] | None = None,
     ):
         super().__init__()
         self._cache_path = cache_path
@@ -51,6 +52,7 @@ class _FetchWorker(QObject):
         self._repo = repo
         self._timeout = timeout
         self._selected_kson_name = selected_kson_name
+        self._known_kson_names = set(known_kson_names or [])
 
 
     def run(self):
@@ -66,7 +68,8 @@ class _FetchWorker(QObject):
             errors.append(str(exc))
 
         try:
-            selected_path, kson = self._latest_local_kson(self._selected_kson_name)
+            selected_name = self._selected_kson_name_after_fetch(remote_sources)
+            selected_path, kson = self._latest_local_kson(selected_name)
             source_url = remote_sources.get(selected_path.name, "")
             if source_url:
                 kson["_source_url"] = source_url
@@ -96,6 +99,19 @@ class _FetchWorker(QObject):
             )
         except Exception as exc:
             self.failed.emit(str(exc), errors)
+
+
+    def _selected_kson_name_after_fetch(self, remote_sources: dict[str, str]) -> str:
+        selected_name = self._selected_kson_name
+        if not remote_sources:
+            return selected_name
+        newest_remote = max(remote_sources, key=self._kson_sort_key)
+        if (
+            newest_remote not in self._known_kson_names
+            and self._kson_sort_key(newest_remote) > self._kson_sort_key(selected_name)
+        ):
+            return newest_remote
+        return selected_name
 
 
     def _download_ksons(self) -> list[tuple[dict, bytes, str, str]]:

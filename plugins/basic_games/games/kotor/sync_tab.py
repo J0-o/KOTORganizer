@@ -978,6 +978,11 @@ class Kotor2SyncTab(QWidget):
             self._KSON_REPO,
             self._FETCH_TIMEOUT_SECONDS,
             str(self._kson_selector.currentData() or ""),
+            [
+                str(self._kson_selector.itemData(index) or "")
+                for index in range(self._kson_selector.count())
+                if self._kson_selector.itemData(index)
+            ],
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
