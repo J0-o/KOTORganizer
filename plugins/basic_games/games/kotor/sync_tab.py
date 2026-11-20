@@ -163,9 +163,9 @@ class Kotor2SyncTab(QWidget):
         header.addWidget(self._download_btn)
         header.addWidget(self._stop_download_btn)
         header.addWidget(self._summary_label)
+        header.addStretch()
         header.addWidget(QLabel("Build:"))
         header.addWidget(self._kson_selector)
-        header.addStretch()
         header.addWidget(self._sync_btn)
         layout.addLayout(header)
 
