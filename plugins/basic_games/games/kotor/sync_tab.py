@@ -17,6 +17,7 @@ from PyQt6.QtGui import QBrush, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
@@ -142,7 +143,9 @@ class Kotor2SyncTab(QWidget):
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
         self._summary_label = QLabel("0 mods")
-        self._kson_version_label = QLabel("KSON: unknown")
+        self._kson_selector = QComboBox(self)
+        self._kson_selector.setMinimumContentsLength(19)
+        self._kson_selector.setToolTip("Select which of the latest three KSON builds Refresh should use.")
         self._refresh_btn = QPushButton("Refresh")
         configure_refresh_button(self._refresh_btn)
         self._refresh_btn.clicked.connect(self._refresh_fetch_validate)
@@ -160,7 +163,8 @@ class Kotor2SyncTab(QWidget):
         header.addWidget(self._download_btn)
         header.addWidget(self._stop_download_btn)
         header.addWidget(self._summary_label)
-        header.addWidget(self._kson_version_label)
+        header.addWidget(QLabel("Build:"))
+        header.addWidget(self._kson_selector)
         header.addStretch()
         header.addWidget(self._sync_btn)
         layout.addLayout(header)
@@ -196,6 +200,7 @@ class Kotor2SyncTab(QWidget):
         self._details.setReadOnly(True)
         self._details.setVisible(False)
 
+        self._reload_kson_choices()
         self.refresh()
 
 
@@ -220,7 +225,6 @@ class Kotor2SyncTab(QWidget):
         self._update_sync_button_state()
         kson = self._read_cached_kson()
         version_text = self._cached_kson_version_text()
-        self._kson_version_label.setText(f"KSON: {version_text}")
         if kson is None:
             row = QTreeWidgetItem(["Info", "", "No cached KSON", "", "", "", "", "Press Fetch", "", ""])
             row.setData(
@@ -973,6 +977,7 @@ class Kotor2SyncTab(QWidget):
             self._game.gameName(),
             self._KSON_REPO,
             self._FETCH_TIMEOUT_SECONDS,
+            str(self._kson_selector.currentData() or ""),
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -995,6 +1000,11 @@ class Kotor2SyncTab(QWidget):
 
 
     def _finish_fetch_latest_manifest(self, result: dict):
+        kson = result.get("kson") if isinstance(result.get("kson"), dict) else {}
+        self._reload_kson_choices(
+            result.get("available_ksons", []),
+            str(kson.get("_selected_kson_name") or ""),
+        )
         self.refresh()
         details = str(result.get("details") or "")
         current = self._tree.currentItem()
@@ -1037,6 +1047,52 @@ class Kotor2SyncTab(QWidget):
             self._refresh_btn.setEnabled(True)
             self._download_btn.setEnabled(self._download_missing_available)
         self._update_sync_button_state()
+
+
+    def _reload_kson_choices(self, names=None, selected_name: str = ""):
+        if names is None:
+            names = [
+                path.name
+                for path in self._kson_dir().glob("*.kson")
+                if path.name != self._cache_path().name and self._is_game_kson_name(path.name)
+            ]
+            names = sorted(names, key=self._kson_name_sort_key, reverse=True)[:3]
+            cached = self._read_cached_kson()
+            if cached is not None:
+                selected_name = str(cached.get("_selected_kson_name") or "")
+        choices = [str(name) for name in names if str(name)]
+        self._kson_selector.clear()
+        for name in choices:
+            version_text = _kson_version_text_from_name(name)
+            self._kson_selector.addItem(version_text, name)
+            self._kson_selector.setItemData(
+                self._kson_selector.count() - 1,
+                name,
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        if not choices:
+            self._kson_selector.addItem("unknown", "")
+        selected_index = self._kson_selector.findData(selected_name)
+        if selected_index >= 0:
+            self._kson_selector.setCurrentIndex(selected_index)
+        self._kson_selector.setEnabled(bool(choices))
+
+
+    def _is_game_kson_name(self, name: str) -> bool:
+        lowered = Path(name).name.lower()
+        if not lowered.endswith(".kson"):
+            return False
+        if self._build_key() == "kotor2":
+            return lowered.startswith("kotor2")
+        return lowered.startswith("kotor") and not lowered.startswith("kotor2")
+
+
+    @staticmethod
+    def _kson_name_sort_key(name: str) -> tuple[str, str]:
+        lowered = Path(name).stem.lower()
+        match = re.search(r"(\d{8}[_-]?\d{6})", lowered)
+        timestamp = match.group(1).replace("_", "").replace("-", "") if match else ""
+        return timestamp, lowered
 
 
     def _update_details(self):

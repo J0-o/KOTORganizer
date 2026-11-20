@@ -475,8 +475,8 @@ class ArchiveService:
 
     @staticmethod
     def _archive_filename_matches(actual_name: str, expected_name: str) -> bool:
-        actual = Path(actual_name)
-        expected = Path(expected_name)
+        actual = Path(html.unescape(actual_name))
+        expected = Path(html.unescape(expected_name))
         if actual.name.casefold() == expected.name.casefold():
             return True
         if actual.suffix.casefold() != expected.suffix.casefold():

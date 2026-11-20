@@ -35,34 +35,45 @@ class _FetchWorker(QObject):
     failed = pyqtSignal(str, object)
 
 
-    def __init__(self, cache_path: Path, build_key: str, game_name: str, repo: str, timeout: int):
+    def __init__(
+        self,
+        cache_path: Path,
+        build_key: str,
+        game_name: str,
+        repo: str,
+        timeout: int,
+        selected_kson_name: str = "",
+    ):
         super().__init__()
         self._cache_path = cache_path
         self._build_key = build_key
         self._game_name = game_name
         self._repo = repo
         self._timeout = timeout
+        self._selected_kson_name = selected_kson_name
 
 
     def run(self):
         errors: list[str] = []
-        remote_name = ""
-        source_url = ""
+        remote_sources: dict[str, str] = {}
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            remote_kson, remote_data, source_url, remote_name = self._download_kson()
-            remote_path = self._cache_path.parent / remote_name
-            remote_path.write_bytes(remote_data)
+            for _remote_kson, remote_data, source_url, remote_name in self._download_ksons():
+                remote_path = self._cache_path.parent / remote_name
+                remote_path.write_bytes(remote_data)
+                remote_sources[remote_name] = source_url
         except Exception as exc:
             errors.append(str(exc))
 
         try:
-            selected_path, kson = self._latest_local_kson()
-            if remote_name and selected_path.name == remote_name:
+            selected_path, kson = self._latest_local_kson(self._selected_kson_name)
+            source_url = remote_sources.get(selected_path.name, "")
+            if source_url:
                 kson["_source_url"] = source_url
                 kson["_fetched_at"] = datetime.now(timezone.utc).isoformat()
             kson["_selected_kson_name"] = selected_path.name
             self._cache_path.write_text(json.dumps(kson, indent=2), encoding="utf-8")
+            available_ksons = self._available_local_ksons()
             mod_count = len([mod for mod in kson.get("mods", []) if ArchiveService.kson_mod_name(mod)])
             details = [
                 f"Loaded {mod_count} mods for {kson.get('game') or self._build_key}.",
@@ -77,6 +88,7 @@ class _FetchWorker(QObject):
                 {
                     "selected_path": str(selected_path),
                     "kson": kson,
+                    "available_ksons": available_ksons,
                     "mod_count": mod_count,
                     "details": "\n".join(details),
                     "warnings": errors,
@@ -86,25 +98,30 @@ class _FetchWorker(QObject):
             self.failed.emit(str(exc), errors)
 
 
-    def _download_kson(self) -> tuple[dict, bytes, str, str]:
+    def _download_ksons(self) -> list[tuple[dict, bytes, str, str]]:
         errors: list[str] = []
         for branch in ("main", "master"):
             try:
-                source_url, file_name = self._latest_kson_raw_url(branch)
-                data = self._download_bytes(source_url)
-                kson = load_kson_bytes(data, file_name)
-                mods = kson.get("mods", [])
-                if isinstance(mods, list) and any(ArchiveService.kson_mod_name(mod) for mod in mods):
-                    kson["_source_url"] = source_url
-                    kson["_fetched_at"] = datetime.now(timezone.utc).isoformat()
-                    return kson, data, source_url, file_name
-                errors.append(f"{source_url} -> no mod entries found")
+                downloads: list[tuple[dict, bytes, str, str]] = []
+                for source_url, file_name in self._latest_kson_raw_urls(branch):
+                    try:
+                        data = self._download_bytes(source_url)
+                        kson = load_kson_bytes(data, file_name)
+                        mods = kson.get("mods", [])
+                        if isinstance(mods, list) and any(ArchiveService.kson_mod_name(mod) for mod in mods):
+                            downloads.append((kson, data, source_url, file_name))
+                        else:
+                            errors.append(f"{source_url} -> no mod entries found")
+                    except Exception as exc:
+                        errors.append(f"{source_url} -> {exc}")
+                if downloads:
+                    return downloads
             except Exception as exc:
                 errors.append(f"{self._repo}/{branch} -> {exc}")
         raise RuntimeError("Unable to fetch a usable KSON manifest.\n\n" + "\n".join(errors))
 
 
-    def _latest_kson_raw_url(self, branch: str) -> tuple[str, str]:
+    def _latest_kson_raw_urls(self, branch: str) -> list[tuple[str, str]]:
         tree_url = f"https://api.github.com/repos/{self._repo}/git/trees/{branch}?recursive=1"
         payload = json.loads(self._download_text(tree_url))
         files = [
@@ -114,11 +131,23 @@ class _FetchWorker(QObject):
         ]
         if not files:
             raise RuntimeError(f"No {self._build_key} .kson files found on {branch}.")
-        latest = max(files, key=self._kson_sort_key)
-        return f"https://raw.githubusercontent.com/{self._repo}/{branch}/{quote(latest)}", Path(latest).name
+        latest = sorted(files, key=self._kson_sort_key, reverse=True)[:3]
+        return [
+            (f"https://raw.githubusercontent.com/{self._repo}/{branch}/{quote(path)}", Path(path).name)
+            for path in latest
+        ]
 
 
-    def _latest_local_kson(self) -> tuple[Path, dict]:
+    def _available_local_ksons(self) -> list[str]:
+        candidates = [
+            path.name
+            for path in self._cache_path.parent.glob("*.kson")
+            if path.name != self._cache_path.name and self._is_game_kson_path(path.name)
+        ]
+        return sorted(candidates, key=self._kson_sort_key, reverse=True)[:3]
+
+
+    def _latest_local_kson(self, selected_name: str = "") -> tuple[Path, dict]:
         candidates = []
         for path in self._cache_path.parent.glob("*.kson"):
             if path.name == self._cache_path.name:
@@ -131,7 +160,13 @@ class _FetchWorker(QObject):
             raise RuntimeError(f"No local {self._build_key} KSON files are available.")
 
         errors: list[str] = []
-        for path in sorted(candidates, key=lambda item: self._kson_sort_key(item.name), reverse=True):
+        ordered = sorted(candidates, key=lambda item: self._kson_sort_key(item.name), reverse=True)
+        if selected_name:
+            selected = next((path for path in ordered if path.name == selected_name), None)
+            if selected is not None:
+                ordered.remove(selected)
+                ordered.insert(0, selected)
+        for path in ordered:
             try:
                 kson = load_kson(path)
                 mods = kson.get("mods", [])
