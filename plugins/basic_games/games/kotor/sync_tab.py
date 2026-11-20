@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import mobase
-from PyQt6.QtCore import QPoint, QProcess, Qt, QThread, QTimer, QUrl
+from PyQt6.QtCore import QObject, QPoint, QProcess, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QBrush, QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 
 from archive_service import ArchiveService
 from hash_utils import file_hash
+from kson_io import load_kson
 from mega_download import completed_mega_download, is_mega_url
 from sync_installer import SyncInstallResult
 from sync_workers import (
@@ -78,6 +79,23 @@ class _NumericTreeWidgetItem(QTreeWidgetItem):
         return super().__lt__(other)
 
 
+class _DeadlyStreamVersionWorker(QObject):
+    finished = pyqtSignal(object)
+
+    def __init__(self, resolver, mod: dict, url: str):
+        super().__init__()
+        self._resolver = resolver
+        self._mod = mod
+        self._url = url
+
+    def run(self):
+        try:
+            result = self._resolver(self._mod, self._url)
+        except Exception as exc:
+            result = (None, f"DeadlyScraper version query failed: {exc}")
+        self.finished.emit(result)
+
+
 class Kotor2SyncTab(QWidget):
     _FETCH_TIMEOUT_SECONDS = 20
     _DOWNLOAD_QUEUE_DELAY_MS = 3000
@@ -93,6 +111,9 @@ class Kotor2SyncTab(QWidget):
         self._download_batch: list[tuple[QTreeWidgetItem, dict]] = []
         self._download_process: QProcess | None = None
         self._download_process_context: tuple[QTreeWidgetItem, dict, set[str]] | None = None
+        self._deadlystream_version_thread: QThread | None = None
+        self._deadlystream_version_worker: _DeadlyStreamVersionWorker | None = None
+        self._deadlystream_version_context: tuple[QTreeWidgetItem, dict, str, str] | None = None
         self._download_validation_thread: QThread | None = None
         self._download_validation_worker: _DownloadedValidationWorker | None = None
         self._download_validation_context: tuple[QTreeWidgetItem, dict, Path, str, bool] | None = None
@@ -410,12 +431,54 @@ class Kotor2SyncTab(QWidget):
         if not scraper.exists():
             self._append_download_detail("DeadlyScraper.exe is missing; automatic download is unavailable.", warning=True)
             return False
-        selected_version, selection_note = self._resolve_deadlystream_download_version(mod, url)
+        thread = QThread(self)
+        worker = _DeadlyStreamVersionWorker(self._resolve_deadlystream_download_version, mod, url)
+        worker.moveToThread(thread)
+        self._deadlystream_version_thread = thread
+        self._deadlystream_version_worker = worker
+        self._deadlystream_version_context = (row, mod, url, archive_name)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._finish_deadlystream_version_resolution)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        return True
+
+
+    def _finish_deadlystream_version_resolution(self, result: tuple[str | None, str]):
+        context = self._deadlystream_version_context
+        self._deadlystream_version_thread = None
+        self._deadlystream_version_worker = None
+        self._deadlystream_version_context = None
+        if context is None:
+            return
+        row, mod, url, archive_name = context
+        if self._download_cancel_requested:
+            self._download_cancel_requested = False
+            self._mark_download_stopped(row, mod, "DeadlyScraper version lookup stopped.")
+            self._download_btn.setEnabled(self._download_missing_available)
+            self._stop_download_btn.setEnabled(False)
+            return
+        selected_version, selection_note = result
         if selected_version is None:
             self._append_download_detail(selection_note or "DeadlyScraper could not resolve a matching DeadlyStream version.", warning=True)
-            return False
+            self._fail_download_and_continue(row, mod, "DeadlyScraper failed. Download this archive manually.")
+            return
         if selection_note:
             self._append_download_detail(selection_note)
+        self._launch_deadlystream_download(row, mod, url, archive_name, selected_version)
+
+
+    def _launch_deadlystream_download(
+        self,
+        row: QTreeWidgetItem,
+        mod: dict,
+        url: str,
+        archive_name: str,
+        selected_version: str,
+    ):
+        scraper = Path(__file__).resolve().parent / "DeadlyScraper.exe"
         process = QProcess(self)
         self._download_process = process
         self._download_process_context = (
@@ -435,7 +498,6 @@ class Kotor2SyncTab(QWidget):
         if archive_name and not self._is_tslrcm_expected_archive_name(archive_name):
             args.extend(["--file", ArchiveService.deadlystream_download_name(mod)])
         process.start(str(scraper), args)
-        return True
 
 
     def _finish_deadlystream_download(self, row: QTreeWidgetItem, mod: dict, process: QProcess):
@@ -706,6 +768,12 @@ class Kotor2SyncTab(QWidget):
             process = self._download_process
             process.kill()
             process.waitForFinished(5000)
+            return
+        if self._deadlystream_version_thread is not None:
+            self._download_cancel_requested = True
+            self._stop_download_btn.setEnabled(False)
+            self._summary_label.setText("Stopping download...")
+            self._details.appendPlainText("\nStopping after the DeadlyStream version lookup...")
             return
         if self._nexus_waiting is not None:
             row, mod, _expected_path, _deadline, existing_names = self._nexus_waiting
@@ -1481,7 +1549,7 @@ class Kotor2SyncTab(QWidget):
 
     def _write_sync_kson_for_current_rows(self, source_path: Path) -> Path | None:
         try:
-            payload = json.loads(source_path.read_text(encoding="utf-8"))
+            payload = load_kson(source_path)
             mods = payload.get("mods", [])
             if not isinstance(mods, list):
                 return None
@@ -1547,7 +1615,7 @@ class Kotor2SyncTab(QWidget):
         selected_name = ""
         if cache_path.exists():
             try:
-                kson = json.loads(cache_path.read_text(encoding="utf-8"))
+                kson = load_kson(cache_path)
                 source_url = str(kson.get("_source_url") or "")
                 selected_name = str(kson.get("_selected_kson_name") or "")
             except Exception:
@@ -1855,7 +1923,7 @@ class Kotor2SyncTab(QWidget):
         if not cache_path.exists():
             return None
         try:
-            kson = json.loads(cache_path.read_text(encoding="utf-8"))
+            kson = load_kson(cache_path)
         except Exception:
             return None
         if not isinstance(kson, dict):
@@ -1869,7 +1937,7 @@ class Kotor2SyncTab(QWidget):
         if not path.exists():
             return {}
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = load_kson(path)
         except Exception:
             return {}
         skipped = payload.get("skipped", {}) if isinstance(payload, dict) else {}

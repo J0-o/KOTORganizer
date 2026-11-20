@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from archive_service import ArchiveService
+from kson_io import load_kson
 from patcher_entries import PatchEntry, collect_patch_entries
 
 
@@ -27,7 +28,7 @@ def install_kson_build(
     progress=None,
     cancelled=None,
 ) -> SyncInstallResult:
-    payload = json.loads(kson_path.read_text(encoding="utf-8"))
+    payload = load_kson(kson_path)
     mods = sorted(
         [mod for mod in payload.get("mods", []) if not _truthy(mod.get("_sync_skip", False))],
         key=lambda item: int(item.get("priority", 0) or 0),

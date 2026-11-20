@@ -19,7 +19,26 @@ def read_mod_meta(mod_path: Path) -> dict[str, str]:
         return {}
     if not parser.has_section("General"):
         return {}
-    return {key: value for key, value in parser["General"].items()}
+    metadata = {key: value for key, value in parser["General"].items()}
+    if "installationFile" in metadata:
+        metadata["installationFile"] = _unquote_qt_ini_value(metadata["installationFile"])
+    return metadata
+
+
+
+def _unquote_qt_ini_value(value: str) -> str:
+    text = str(value).strip()
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        return text[1:-1]
+    return text
+
+
+
+def _quote_qt_ini_value(value: str) -> str:
+    text = str(value)
+    if any(character in text for character in ";,=") or text != text.strip():
+        return f'"{text}"'
+    return text
 
 
 
@@ -119,7 +138,7 @@ def write_mod_meta_for_build_match(
     general["buildURL"] = build_url
     if archive_entry is not None:
         installation_file, _download_meta_path, download_meta = archive_entry
-        general["installationFile"] = installation_file
+        general["installationFile"] = _quote_qt_ini_value(installation_file)
         general["modName"] = str(download_meta.get("modName", "")).strip()
         general["manualURL"] = str(download_meta.get("manualURL", "")).strip()
         general["url"] = str(download_meta.get("url", "")).strip()

@@ -183,6 +183,8 @@ class ArchiveReader:
             close_fn = _CLOSE_FUNC(self._archive.vtable[_VTBL_CLOSE])
             close_fn(self._archive.raw)
             self._archive = None
+        if self._in_stream is not None:
+            self._in_stream.close()
         self._in_stream = None
         self._open_callback = None
 

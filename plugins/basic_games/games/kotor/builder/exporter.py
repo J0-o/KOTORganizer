@@ -8,6 +8,7 @@ from pathlib import Path
 from archive_service import ArchiveService
 from hash_utils import file_hash as _file_hash
 from hash_utils import file_hashes as _file_hashes
+from kson_io import write_kson
 
 
 TEXT_EXTENSIONS = {".ini", ".cfg", ".txt"}
@@ -94,8 +95,7 @@ def build_instruction_set(
 
     if progress:
         progress(total, total, "Writing output", str(output_path))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    output_path = write_kson(output_path, payload)
     return BuildResult(output_path=output_path, mod_count=len(payload["mods"]), skipped=skipped, warnings=warnings)
 
 
@@ -131,8 +131,7 @@ def build_initial_instruction_set(
                 "actions": [],
             }
         )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    output_path = write_kson(output_path, payload)
     return BuildResult(output_path=output_path, mod_count=len(payload["mods"]), skipped=[], warnings=[])
 
 

@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from archive_service import ArchiveService
+from kson_io import load_kson, load_kson_bytes
 from sync_installer import install_kson_build
 
 
@@ -45,16 +46,21 @@ class _FetchWorker(QObject):
 
     def run(self):
         errors: list[str] = []
+        remote_name = ""
+        source_url = ""
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            remote_kson, _source_url, remote_name = self._download_kson()
+            remote_kson, remote_data, source_url, remote_name = self._download_kson()
             remote_path = self._cache_path.parent / remote_name
-            remote_path.write_text(json.dumps(remote_kson, indent=2), encoding="utf-8")
+            remote_path.write_bytes(remote_data)
         except Exception as exc:
             errors.append(str(exc))
 
         try:
             selected_path, kson = self._latest_local_kson()
+            if remote_name and selected_path.name == remote_name:
+                kson["_source_url"] = source_url
+                kson["_fetched_at"] = datetime.now(timezone.utc).isoformat()
             kson["_selected_kson_name"] = selected_path.name
             self._cache_path.write_text(json.dumps(kson, indent=2), encoding="utf-8")
             mod_count = len([mod for mod in kson.get("mods", []) if ArchiveService.kson_mod_name(mod)])
@@ -80,18 +86,18 @@ class _FetchWorker(QObject):
             self.failed.emit(str(exc), errors)
 
 
-    def _download_kson(self) -> tuple[dict, str, str]:
+    def _download_kson(self) -> tuple[dict, bytes, str, str]:
         errors: list[str] = []
         for branch in ("main", "master"):
             try:
                 source_url, file_name = self._latest_kson_raw_url(branch)
-                text = self._download_text(source_url)
-                kson = json.loads(text)
+                data = self._download_bytes(source_url)
+                kson = load_kson_bytes(data, file_name)
                 mods = kson.get("mods", [])
                 if isinstance(mods, list) and any(ArchiveService.kson_mod_name(mod) for mod in mods):
                     kson["_source_url"] = source_url
                     kson["_fetched_at"] = datetime.now(timezone.utc).isoformat()
-                    return kson, source_url, file_name
+                    return kson, data, source_url, file_name
                 errors.append(f"{source_url} -> no mod entries found")
             except Exception as exc:
                 errors.append(f"{self._repo}/{branch} -> {exc}")
@@ -127,7 +133,7 @@ class _FetchWorker(QObject):
         errors: list[str] = []
         for path in sorted(candidates, key=lambda item: self._kson_sort_key(item.name), reverse=True):
             try:
-                kson = json.loads(path.read_text(encoding="utf-8"))
+                kson = load_kson(path)
                 mods = kson.get("mods", [])
                 if isinstance(mods, list) and any(ArchiveService.kson_mod_name(mod) for mod in mods):
                     return path, kson
@@ -143,6 +149,15 @@ class _FetchWorker(QObject):
             with urlopen(request, timeout=self._timeout) as response:
                 charset = response.headers.get_content_charset() or "utf-8"
                 return response.read().decode(charset, errors="replace")
+        except URLError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+
+    def _download_bytes(self, url: str) -> bytes:
+        request = Request(url, headers={"User-Agent": "KOTORganizer-MO2-SyncTab/1.0"})
+        try:
+            with urlopen(request, timeout=self._timeout) as response:
+                return response.read()
         except URLError as exc:
             raise RuntimeError(str(exc)) from exc
 

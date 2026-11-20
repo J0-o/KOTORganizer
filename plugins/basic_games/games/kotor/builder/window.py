@@ -1390,7 +1390,7 @@ class KotorBuilderWindow(QWidget):
                 self,
                 "Save Initial KSON Instruction Set",
                 str(output_path),
-                "KSON Files (*.kson);;JSON Files (*.json);;All Files (*)",
+                "KSON Archives (*.kson);;All Files (*)",
             )
             if not selected:
                 return
@@ -1417,7 +1417,7 @@ class KotorBuilderWindow(QWidget):
             self,
             "Save KSON Instruction Set",
             str(output_path),
-            "KSON Files (*.kson);;JSON Files (*.json);;All Files (*)",
+            "KSON Archives (*.kson);;All Files (*)",
         )
         if not selected:
             return

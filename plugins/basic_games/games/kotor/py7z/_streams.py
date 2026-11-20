@@ -101,9 +101,13 @@ class FileInStream(PyCOMObject):
         """
 
         try:
-            self._file.close()
+            self.close()
         except Exception:
             pass
+
+    def close(self) -> None:
+        """Close the underlying input file."""
+        self._file.close()
 
     def _Read(
         self,

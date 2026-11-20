@@ -14,6 +14,7 @@ from .exceptions import (
     WrongPasswordError,
 )
 from .reader import ArchiveReader
+from .writer import write_7z
 
 __all__ = [
     "ArchiveEntry",
@@ -26,4 +27,5 @@ __all__ = [
     "PasswordRequiredError",
     "SevenZipError",
     "WrongPasswordError",
+    "write_7z",
 ]
