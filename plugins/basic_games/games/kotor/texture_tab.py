@@ -537,6 +537,8 @@ class Kotor2TextureTab(QWidget):
 
 
     def _auto_fix(self):
+        hidden_count = 0
+        failed_paths: set[Path] = set()
         while True:
             visible_by_base = self._visible_files_by_base()
             to_hide: list[Path] = []
@@ -560,13 +562,20 @@ class Kotor2TextureTab(QWidget):
                 try:
                     path.rename(path.with_name(path.name + ".mohidden"))
                     changed = True
+                    hidden_count += 1
                 except Exception as e:
+                    failed_paths.add(path)
                     logger.warning(f"[KOTOR2] Failed to auto-hide {path}: {e}")
 
             if not changed:
                 break
 
         self.refresh()
+        message = f"[KOTOR2 Textures] Auto Fix complete: {hidden_count} hidden, {len(failed_paths)} failed."
+        if failed_paths:
+            logger.warning(message)
+        else:
+            logger.info(message)
 
 
     def _undo_all_and_auto_fix(self):
@@ -581,12 +590,21 @@ class Kotor2TextureTab(QWidget):
             path = self._item_path(item)
             if bool(item.data(0, Qt.ItemDataRole.UserRole + 1)) and path and path.name.endswith(".mohidden"):
                 paths.append(path)
+        unhidden_count = 0
+        failed_count = 0
         for path in paths:
             try:
                 path.rename(path.with_name(path.name[:-9]))
+                unhidden_count += 1
             except Exception as e:
+                failed_count += 1
                 logger.warning(f"[KOTOR2] Failed to unhide {path}: {e}")
         self.refresh()
+        message = f"[KOTOR2 Textures] Undo All complete: {unhidden_count} restored, {failed_count} failed."
+        if failed_count:
+            logger.warning(message)
+        else:
+            logger.info(message)
 
 
 

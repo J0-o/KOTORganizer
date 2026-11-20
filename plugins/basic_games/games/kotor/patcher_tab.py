@@ -325,7 +325,7 @@ class Kotor2PatcherTab(QWidget):
                 refresh_mo2(self._organizer, self)
             mod_list.setActive(patcher_mod_name, True)
         except Exception as exc:
-            logger.debug("Unable to activate generated patcher output mod %s: %s", patcher_mod_name, exc)
+            logger.debug(f"Unable to activate generated patcher output mod {patcher_mod_name}: {exc}")
 
 
     def _mo2_mod_display_name(self, mod_name: str) -> str:
@@ -383,7 +383,7 @@ class Kotor2PatcherTab(QWidget):
         except Exception as ex:
             if not self._mod_highlight_warning_logged:
                 self._mod_highlight_warning_logged = True
-                logger.debug("Unable to highlight MO2 mod list entry for %s: %s", mod_name, ex)
+                logger.debug(f"Unable to highlight MO2 mod list entry for {mod_name}: {ex}")
 
 
     @staticmethod
@@ -598,7 +598,7 @@ class Kotor2PatcherTab(QWidget):
                     enabled[key] = bool(row.get("enabled", False))
                 return enabled
             except Exception as e:
-                logger.warning("[KOTOR2] Failed to read patcher JSON state: %s", e)
+                logger.warning(f"[KOTOR2] Failed to read patcher JSON state: {e}")
         return enabled
 
 
@@ -627,7 +627,7 @@ class Kotor2PatcherTab(QWidget):
                 if PATCHER_CATEGORY_NAME not in categories:
                     mod.addCategory(PATCHER_CATEGORY_NAME)
             except Exception as exc:
-                logger.warning("[KOTOR] Failed to assign patcher category to %s: %s", mod_name, exc)
+                logger.warning(f"[KOTOR] Failed to assign patcher category to {mod_name}: {exc}")
 
 
     @staticmethod
@@ -1348,6 +1348,7 @@ class Kotor2PatcherTab(QWidget):
             self._prepare_patcher_mod(manage_busy=False)
             if self._stop_patcher_requested:
                 self._append_status_text("Run stopped by user during prepare.")
+                logger.warning("[KOTOR2 Patcher] Run stopped manually during prepare.")
                 return
             temp_root.mkdir(parents=True, exist_ok=True)
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -1457,6 +1458,21 @@ class Kotor2PatcherTab(QWidget):
             else:
                 summary_lines.append("Mods with warnings: none")
             self._append_status_text("\n".join(summary_lines))
+            if self._stop_patcher_requested:
+                logger.warning(
+                    f"[KOTOR2 Patcher] Run stopped manually: {failures} failure(s), "
+                    f"{error_count} error(s), {warning_count} warning(s)."
+                )
+            elif failures:
+                logger.warning(
+                    f"[KOTOR2 Patcher] Run finished with {failures} failure(s), "
+                    f"{error_count} error(s), and {warning_count} warning(s)."
+                )
+            else:
+                logger.info(
+                    f"[KOTOR2 Patcher] Run succeeded: {len(enabled_entries)} patch(es), "
+                    f"{error_count} error(s), {warning_count} warning(s)."
+                )
         finally:
             self._set_runner_busy(False)
             self._current_patcher_process = None

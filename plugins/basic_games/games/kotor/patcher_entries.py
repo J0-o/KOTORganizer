@@ -97,7 +97,7 @@ def _collect_namespaced_entries(
     try:
         read_ini_with_fallbacks(parser, namespaces_ini)
     except Exception as exc:
-        logger.warning("[KOTOR2] Failed to read namespaces.ini for %s: %s", mod_path.name, exc)
+        logger.warning(f"[KOTOR2] Failed to read namespaces.ini for {mod_path.name}: {exc}")
         return []
 
     if not parser.has_section("Namespaces"):

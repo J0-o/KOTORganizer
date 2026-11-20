@@ -140,15 +140,12 @@ class KotorGameMixin:
             steam_root = self._detect_steam_root(Path(game_dir.absolutePath()))
             self._warn_if_workshop_present(steam_root)
             self._logger.info(
-                "[%s] Steam detected:%s path:%s steam_root:%s",
-                self._log_prefix,
-                self.is_steam(),
-                game_dir.absolutePath(),
-                steam_root,
+                f"[{self._log_prefix}] Steam detected:{self.is_steam()} "
+                f"path:{game_dir.absolutePath()} steam_root:{steam_root}"
             )
             self._platform_logged = True
         except Exception as exc:
-            self._logger.info("[%s] Platform logging failed: %s", self._log_prefix, exc)
+            self._logger.info(f"[{self._log_prefix}] Platform logging failed: {exc}")
         return True
 
 
@@ -187,7 +184,7 @@ class KotorGameMixin:
         workshop_path = Path(steam_root) / "steamapps" / "workshop" / "content" / self._workshop_app_id
         try:
             if workshop_path.exists() and any(workshop_path.iterdir()):
-                self._logger.warning("[%s] Steam Workshop content detected", self._log_prefix)
+                self._logger.warning(f"[{self._log_prefix}] Steam Workshop content detected")
                 try:
                     QTimer.singleShot(
                         2000,
@@ -200,7 +197,7 @@ class KotorGameMixin:
                 except Exception:
                     pass
         except Exception as exc:
-            self._logger.debug("[%s] Workshop check failed: %s", self._log_prefix, exc)
+            self._logger.debug(f"[{self._log_prefix}] Workshop check failed: {exc}")
 
 
     def _confirm_texture_major_errors(self) -> bool:
@@ -210,13 +207,13 @@ class KotorGameMixin:
             else:
                 major_errors = Kotor2TextureTab.count_major_errors_for_game(self)
         except Exception as exc:
-            self._logger.info("[%s] Texture warning check failed: %s", self._log_prefix, exc)
+            self._logger.info(f"[{self._log_prefix}] Texture warning check failed: {exc}")
             return True
 
         if major_errors <= 0:
             return True
 
-        self._logger.warning("[%s] Major texture conflicts detected: %s", self._log_prefix, major_errors)
+        self._logger.warning(f"[{self._log_prefix}] Major texture conflicts detected: {major_errors}")
         try:
             result = QMessageBox.warning(
                 None,
@@ -233,7 +230,7 @@ class KotorGameMixin:
             )
             return result != QMessageBox.StandardButton.Cancel
         except Exception as exc:
-            self._logger.debug("[%s] Texture warning dialog failed: %s", self._log_prefix, exc)
+            self._logger.debug(f"[{self._log_prefix}] Texture warning dialog failed: {exc}")
             return True
 
 

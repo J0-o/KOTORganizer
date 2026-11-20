@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -15,6 +16,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+logger = logging.getLogger("mobase")
 
 
 class _UpdateWorker(QObject):
@@ -283,6 +286,10 @@ class KotorInfoTab(QWidget):
     def _finish_update_check(self, release: dict):
         current = self._version_key(self._game_version())
         latest = self._version_key(str(release.get("tag") or ""))
+        logger.info(
+            f"[KOTORganizer Update] Update check succeeded: installed {self._game_version()}, "
+            f"latest {release.get('tag')}."
+        )
         if latest <= current:
             QMessageBox.information(
                 self,
@@ -321,6 +328,7 @@ class KotorInfoTab(QWidget):
 
 
     def _finish_update_install(self, result: dict):
+        logger.info(f"[KOTORganizer Update] Successfully installed {result.get('tag')}.")
         QMessageBox.information(
             self,
             "KOTORganizer Update Installed",
@@ -346,6 +354,7 @@ class KotorInfoTab(QWidget):
 
     def _fail_update(self, message: str):
         self._pending_install_release = None
+        logger.warning(f"[KOTORganizer Update] Update failed: {message}")
         QMessageBox.warning(self, "KOTORganizer Update Failed", message)
 
 

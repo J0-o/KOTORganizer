@@ -31,14 +31,10 @@ from shared_game import KotorGameMixin, KotorModDataCheckerBase
 from saves_tab import Kotor2SaveGame, parse_kotor2_save_metadata
 
 logger = logging.getLogger("mobase")
-if _plugin_dir_added:
-    logger.info(f"[KOTOR2] inserted plugin dir into sys.path: {_plugin_dir_str}")
-if _shared_dir_added:
-    logger.info(f"[KOTOR2] inserted shared dir into sys.path: {_shared_dir_str}")
-logger.info(f"[KOTOR2] plugin file path: {_plugin_file} | plugin dir: {_plugin_dir}")
-for _idx, _entry in enumerate(sys.path):
-    logger.info(f"[KOTOR2] sys.path[{_idx}]: {_entry}")
-logger.info(f"[KOTOR2] import probe: {KOTOR2_IMPORT_PROBE}")
+logger.info(
+    f"[KOTOR2] Plugin loaded from {_plugin_file} "
+    f"(path setup: plugin={_plugin_dir_added}, shared={_shared_dir_added}; import probe={KOTOR2_IMPORT_PROBE})."
+)
 
 class Kotor2ModDataChecker(KotorModDataCheckerBase):
     pass
