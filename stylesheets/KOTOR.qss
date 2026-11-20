@@ -1325,6 +1325,14 @@ QTableView#logList::item:alternate {
   background-color: #000016;
 }
 
+QAbstractItemView#logList::item:selected,
+QListView#logList::item:selected,
+QTreeView#logList::item:selected,
+QTableView#logList::item:selected {
+  color: #000016;
+  background-color: #00afff;
+}
+
 QDialog QPushButton,
 QWidget#tabESPs QToolButton {
   background-color: #000016;
